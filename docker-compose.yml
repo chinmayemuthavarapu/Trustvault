@@ -1,0 +1,15 @@
+# Local production-like run:  docker compose up --build   then open http://localhost:8000
+# Generate keys once:  python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+services:
+  trustvault:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      TV_MASTER_KEY: ${TV_MASTER_KEY:?set TV_MASTER_KEY}
+      TV_AUDIT_KEY: ${TV_AUDIT_KEY:?set TV_AUDIT_KEY}
+      TV_COOKIE_SECURE: "0"        # plain http on localhost only; never in a real deployment
+      TV_ENV: development           # production refuses insecure cookies
+      TV_SEED_ON_START: "1"
+    volumes: ["tvdata:/data"]
+volumes:
+  tvdata:

@@ -1,0 +1,25 @@
+# Render.com blueprint: New > Blueprint > pick this repo.
+# Set TV_MASTER_KEY and TV_AUDIT_KEY in the dashboard (two DIFFERENT random 32-byte base64 values).
+services:
+  - type: web
+    name: trustvault
+    runtime: docker
+    plan: starter            # a persistent disk needs a paid instance
+    healthCheckPath: /healthz
+    envVars:
+      - key: TV_ENV
+        value: production
+      - key: TV_TRUSTED_PROXIES
+        value: "1"           # Render's proxy sets X-Forwarded-For; trust exactly one hop
+      - key: TV_AUDIT_STDOUT
+        value: "1"           # second copy of the audit trail in Render's log store
+      - key: TV_SEED_ON_START
+        value: "1"
+      - key: TV_MASTER_KEY
+        sync: false
+      - key: TV_AUDIT_KEY
+        sync: false
+    disk:
+      name: trustvault-data
+      mountPath: /data
+      sizeGB: 1

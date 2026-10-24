@@ -1,0 +1,31 @@
+# Fly.io alternative:
+#   fly launch --no-deploy --copy-config
+#   fly volumes create tvdata --size 1
+#   fly secrets set TV_MASTER_KEY=... TV_AUDIT_KEY=...
+#   fly deploy
+app = "trustvault"
+primary_region = "sjc"
+
+[build]
+
+[env]
+  TV_ENV = "production"
+  TV_TRUSTED_PROXIES = "1"
+  TV_AUDIT_STDOUT = "1"
+  TV_SEED_ON_START = "1"
+
+[[mounts]]
+  source = "tvdata"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+  max_machines_running = 1   # one writer: SQLite + in-memory rate limiter
+
+  [[http_service.checks]]
+    path = "/healthz"
+    interval = "30s"
+    timeout = "3s"

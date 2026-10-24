@@ -1,85 +1,85 @@
 # TrustVault API
 
-Base path `/api`. JSON in and out, except uploads (multipart) and downloads (file bytes).
+JSON over HTTPS, same origin as the web app. All routes are under `/api`.
 
-## Conventions
+**Authentication.** `POST /api/auth/login` sets an `HttpOnly`, `Secure`, `SameSite=Strict` session cookie and returns a `csrf_token`. Every request that is not `GET` must send that value in the `X-CSRF-Token` header (this includes `login` and `logout` while a session is live). Requests from another `Origin` are refused.
 
-- **Authentication:** session cookie set by `POST /api/auth/login`. It is `HttpOnly`, `SameSite=Strict`, and in production `Secure` with the `__Host-` prefix.
-- **CSRF:** every `POST`, `PATCH` and `DELETE` (except login) must send `X-CSRF-Token`. The token is returned by login and `GET /api/auth/me`.
-- **Errors:**
-  - `401` not signed in.
-  - `403` your *role* can't do this.
-  - `404` no such document **or** you have no access. The two are deliberately identical.
-  - `413` body too large.
-  - `422` invalid input.
-  - `429` rate limited.
-- **Audit:** every call to a document route is recorded, allowed or refused. Refusals are recorded even though the response is a 404.
+**Errors.** `{"error": "<message for a person>"}` with:
+`400` invalid input · `401` not signed in · `403` signed in but not allowed (only when you can already see the document, or the route is role-restricted) · `404` not found **or not yours** (deliberately identical) · `409` conflict · `413` too large · `429` rate-limited or locked out.
 
-Who may call each endpoint, in terms of the document involved:
+**Who may call.** "Signed in" means any active account that is not waiting to change a temporary password. Document rules come from `app/authz.py`; the role column of the account never grants document access by itself.
 
-| Shorthand | Meaning |
-|---|---|
-| **owner** | the document's owner |
-| **editor** | a live `edit` grant |
-| **reader** | a live `read` grant |
+| Document permission | view | download | edit details / new version | share (grants, suggestions, activity) | trash | restore / purge |
+|---|---|---|---|---|---|---|
+| Owner (live document) | ✓ | ✓ | ✓ | ✓ | ✓ | – |
+| Owner (in trash) | ✓ | – | – | – | – | ✓ |
+| Edit grant | ✓ | ✓ | ✓ | – | – | – |
+| Read grant | ✓ | ✓ | – | – | – | – |
+| Anyone else, including admins | – | – | – | – | – | – |
 
-A grant is *live* when it is not revoked and not expired. Documents in the trash are reachable only by their owner, and only through restore and purge. Admins get no implicit access to any document.
+Grants with an `expires_at` in the past count as absent. Grants on a trashed document are suspended until it is restored.
+
+---
 
 ## Auth
 
-| Method | Path | Who | Notes |
+| Method & path | Who | Body | Notes |
 |---|---|---|---|
-| POST | `/auth/login` | anyone | `{email, password}` → `{user, csrf_token}`. JSON only. 20/5 min per IP, 10/5 min per account, back-off after 5 failures |
-| POST | `/auth/logout` | signed in | Deletes the session row |
-| GET | `/auth/me` | signed in | `{user, csrf_token}` |
+| `POST /api/auth/login` | Anyone | `{username, password}` | Returns the user and `csrf_token`. Same error for unknown user, wrong password, disabled account. 8 failures per username or 30 per IP in 15 min → 429. |
+| `POST /api/auth/logout` | Anyone | – | Deletes the session server-side. |
+| `GET /api/auth/me` | Signed in (incl. must-change-password) | – | Current user and `csrf_token`. |
+| `POST /api/auth/change-password` | Signed in (incl. must-change-password) | `{current_password, new_password}` | 12+ characters, not common, not containing the username. Ends all **other** sessions. |
 
 ## Documents
 
-| Method | Path | Who | Notes |
+| Method & path | Who | Body / query | Notes |
 |---|---|---|---|
-| GET | `/documents` | signed in | Only documents you own or have a live grant on. Query: `q, owner, category, tag, from, to` (dates), `scope=all\|mine\|shared\|trash`, `sort=updated_at\|created_at\|title\|category`, `order`, `page`, `page_size≤100`. `total` is scoped too |
-| GET | `/documents/categories` | signed in | Categories of documents you can see |
-| POST | `/documents` | role **owner** | Multipart: `file`, `title`, `category`, `tags` (comma-separated), `description`. ≤ 25 MB; pdf, docx, xlsx, pptx, png, jpg, txt, csv; content must match the extension. You become the owner |
-| GET | `/documents/{id}` | owner, editor, reader | Metadata plus current version. Audited as `document_view` |
-| PATCH | `/documents/{id}` | owner, editor | `{title?, category?, tags?, description?}`; any other field → 422 |
-| DELETE | `/documents/{id}` | owner | Moves to the trash; grantees lose access at once. Purged automatically after 30 days |
-| POST | `/documents/{id}/restore` | owner, document in trash | |
-| DELETE | `/documents/{id}/purge` | owner, document in trash | Destroys every version. The audit record is kept |
-| GET | `/documents/{id}/versions` | owner, editor, reader | |
-| POST | `/documents/{id}/versions` | owner, editor | Multipart `file` |
-| GET | `/documents/{id}/versions/{vid}/download` | owner, editor, reader | `vid` must belong to `id`. Response is `attachment`, `no-store`, `nosniff`, `CSP: sandbox`. Audited with version and SHA-256. 60 downloads / 10 min per user |
+| `GET /api/meta` | Signed in | – | Categories, upload limit, allowed extensions. |
+| `GET /api/documents` | Signed in | `q`, `owner`, `category`, `from`, `to` (YYYY-MM-DD, upload date), `scope` (`all`/`mine`/`shared`), `sort` (`updated`/`created`/`title`), `page`, `page_size` (≤100) | Returns only documents you can view. `total` counts only those. |
+| `GET /api/documents/trash` | Signed in | – | Your own trashed documents only. |
+| `POST /api/documents` | Role **owner** | multipart: `file`, `title`, `category`, `description` | File type detected from content; see THREATS.md §D. You become the owner. Private until shared. |
+| `GET /api/documents/{id}` | view | – | Metadata, `my_permission`, all versions. Audited (`document.view`). |
+| `PATCH /api/documents/{id}` | edit | `{title?, category?, description?}` | Unknown fields → 400. |
+| `POST /api/documents/{id}/versions` | edit | multipart: `file` | Adds version n+1; earlier versions kept. |
+| `GET /api/documents/{id}/download[?version={versionId}]` | download | – | `application/octet-stream`, attachment, `no-store`, CSP sandbox. The version must belong to this document. Audited before the first byte. 40/min per user. |
+| `DELETE /api/documents/{id}` | owner (live) | – | Moves to trash; grantees lose access until restored. |
+| `POST /api/documents/{id}/restore` | owner (in trash) | – | Earlier grants apply again. |
+| `POST /api/documents/{id}/purge` | owner (in trash) | – | Destroys every version's encrypted file and all grants. Audit history is kept. Also runs automatically 30 days after trashing. |
 
 ## Sharing
 
-| Method | Path | Who | Notes |
+| Method & path | Who | Body | Notes |
 |---|---|---|---|
-| GET | `/documents/{id}/grants` | owner | Active, expired and revoked, with status |
-| POST | `/documents/{id}/grants` | owner | `{grantee_id, level: read\|edit, expires_at?, via_suggestion?}`. Replaces any live grant for that person. Grantee must be active and not the owner. Expiry: future, ≤ 1 year |
-| DELETE | `/documents/{id}/grants/{gid}` | owner | Effective on the grantee's next request. Returns `revoked` or `already_revoked` |
-| GET | `/documents/{id}/activity` | owner | The document's custody record (last 200 audit entries, refusals included) |
-| POST | `/documents/{id}/suggestions` | owner | Suggested people with reasons. Creates no access. Audited |
-| POST | `/documents/{id}/suggestions/dismiss` | owner | `{user_ids: [...]}`. Audited |
-| GET | `/users/lookup?q=` | role **owner** | ≥ 2 characters; ≤ 10 active people; id, name, email |
+| `GET /api/documents/{id}/grants` | owner | – | Everyone with access, level, expiry, who granted. |
+| `POST /api/documents/{id}/grants` | owner | `{username, permission: "read"\|"edit", expires_at?: "YYYY-MM-DD", suggestion_id?}` | Creates or changes a grant (upsert). Target must be an active account other than the owner. Expiry date is inclusive and must be in the future. `suggestion_id` records that the owner accepted a suggestion. |
+| `DELETE /api/documents/{id}/grants/{grantId}` | owner | – | Grant must belong to this document. Effective on the grantee's next request. |
+| `GET /api/documents/{id}/suggestions` | owner | – | Up to 5 people, from the owner's own sharing history. **Read-only: never grants access.** First appearance of each suggestion is audited. |
+| `POST /api/documents/{id}/suggestions/{sid}/dismiss` | owner | – | Not suggested again for this document. |
+| `GET /api/documents/{id}/activity` | owner | – | Audit entries for this document (no IPs). |
+| `GET /api/users/lookup?q=` | Role owner, or anyone who owns a document | – | ≥2 characters, ≤8 active people. |
 
-## Administration (role **admin**)
+## Administration (role **admin** only)
 
-| Method | Path | Notes |
+Administrators manage accounts and watch activity. They cannot open, download or share documents.
+
+| Method & path | Body / query | Notes |
 |---|---|---|
-| GET | `/admin/users` | All accounts |
-| POST | `/admin/users` | `{email, display_name, role, password≥12}` |
-| PATCH | `/admin/users/{id}` | `{display_name?, role?, is_active?, password?}`. Deactivation, role change and password reset end all of that person's sessions. You cannot change your own role or deactivate yourself. In demo mode seed accounts are protected |
-| GET | `/admin/documents` | Metadata only (title, owner, number of live grants). Admins have no route to content |
-| POST | `/admin/documents/{id}/transfer` | `{new_owner_id}` (an active document owner) |
-| GET | `/admin/audit` | Filters: `actor, action, outcome, document_id, from, to, category=all\|access\|permissions\|auth\|admin`, paging |
-| POST | `/admin/audit/verify` | Recomputes the hash chain, checks signed checkpoints, then signs a new one |
-| GET | `/admin/alerts` | Refusal bursts, attempts after revocation, bulk downloads, failed-login bursts, wide sharing, transfers, account changes, integrity failure |
-| GET | `/admin/stats` | Totals and a 14-day series |
+| `GET /api/admin/users` | – | All accounts with session and document counts. |
+| `POST /api/admin/users` | `{username, display_name, role}` | Returns a one-time `temporary_password`; the person must change it at first sign-in. |
+| `PATCH /api/admin/users/{userId}` | `{role?, active?, display_name?}` | Disabling or changing role ends all that person's sessions. Cannot change own role or disable self; one active admin must remain. |
+| `POST /api/admin/users/{userId}/revoke-sessions` | – | Signs the person out everywhere now. |
+| `GET /api/admin/audit` | `action` (prefix, e.g. `permission.`), `outcome` (`allowed`/`denied`/`error`), `actor`, `document` (title or id), `from`, `to`, `page`, `page_size` (≤200) | Full entries including `prev_hash` and `hash`. |
+| `GET /api/admin/audit/verify` | – | Recomputes the HMAC chain. `{intact, checked, head_id, head_hash}` or `{intact: false, broken_at_id, problem}`. The verification itself is audited. |
+| `GET /api/admin/alerts` | – | Repeated refusals, bulk downloads, login failures, password spraying, mass sharing, forged requests, integrity failures. |
+| `GET /api/admin/summary` | – | 24-hour counts, hourly allowed/refused series, alerts. |
 
 ## Other
 
-| Method | Path | Who |
+| Method & path | Who | Notes |
 |---|---|---|
-| GET | `/health` | anyone (returns `{"status":"ok"}`, no data) |
-| GET | `/openapi.json` | signed in |
+| `GET /` and `/static/*` | Anyone | The single-page app. |
+| `GET /healthz` | Anyone | `{"ok": true}` for the platform health check. |
 
-`backend/tests/test_matrix.py` holds this table as code: every route against seven kinds of caller. The test `test_every_route_in_matrix` fails if a route is added without an entry.
+## Audit event names
+
+`auth.login`, `auth.logout`, `auth.password_change` · `document.upload`, `document.view`, `document.download`, `document.update`, `document.new_version`, `document.delete`, `document.restore`, `document.purge`, `document.access` (unauthenticated), and `document.<action>` for refusals · `permission.grant`, `permission.change`, `permission.revoke` · `suggestion.shown`, `suggestion.dismissed` · `admin.user_create`, `admin.user_update`, `admin.sessions_revoked`, `admin.audit_verified` · `security.csrf_rejected`, `security.origin_rejected`, `security.role_denied`.
