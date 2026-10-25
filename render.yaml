@@ -4,15 +4,15 @@ services:
   - type: web
     name: trustvault
     runtime: docker
-    plan: starter            # a persistent disk needs a paid instance
+    plan: free
     healthCheckPath: /healthz
     envVars:
       - key: TV_ENV
         value: production
       - key: TV_TRUSTED_PROXIES
-        value: "1"           # Render's proxy sets X-Forwarded-For; trust exactly one hop
+        value: "1"
       - key: TV_AUDIT_STDOUT
-        value: "1"           # second copy of the audit trail in Render's log store
+        value: "1"
       - key: TV_SEED_ON_START
         value: "1"
       - key: TV_MASTER_KEY
