@@ -4,7 +4,7 @@ services:
   - type: web
     name: trustvault
     runtime: docker
-    plan: free            # a persistent disk needs a paid instance
+    plan: starter            # a persistent disk needs a paid instance
     healthCheckPath: /healthz
     envVars:
       - key: TV_ENV
@@ -19,4 +19,8 @@ services:
         sync: false
       - key: TV_AUDIT_KEY
         sync: false
+     disk:
+        name : trustvault-data
+        mountPath : /data
+        sizeGB : 1
    
