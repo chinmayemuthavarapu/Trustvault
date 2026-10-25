@@ -19,8 +19,4 @@ services:
         sync: false
       - key: TV_AUDIT_KEY
         sync: false
-     disk:
-        name : trustvault-data
-        mountPath : /data
-        sizeGB : 1
-   
+     
